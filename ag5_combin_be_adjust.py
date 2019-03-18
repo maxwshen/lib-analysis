@@ -7,6 +7,7 @@ import numpy as np
 from collections import defaultdict
 from mylib import util
 import pandas as pd
+from scipy.stats import binom
 
 # Default params
 inp_dir = _config.DATA_DIR
@@ -42,7 +43,7 @@ def get_significant_poswise_muts(df):
       if num >= threshold:
         sig_muts.append('%s,%s' % (nt_col, obs_nt))
 
-  return sig_muts
+  return sig_muts, dd
 
 
 def adjust_treatment_control(treat_nm, control_nm):
@@ -90,14 +91,25 @@ def adjust_treatment_control(treat_nm, control_nm):
     c = c.reset_index()
 
     # Detect columns with high mutation rate in control
-    cm = get_significant_poswise_muts(c)
-    tm = get_significant_poswise_muts(t)
+    cm, cm_dd = get_significant_poswise_muts(c)
+    tm, _ = get_significant_poswise_muts(t)
 
     bad_nt_cols = []
     for sig_mut in cm:
       if sig_mut in tm:
         [nt_col, obs_nt] = sig_mut.split(',')
         bad_nt_cols.append(nt_col)
+
+    # Check corner case
+    for nt_col in cm_dd:
+      tot = sum(cm_dd[nt_col].values())
+      ref_nt = nt_col[0]
+      for obs_nt in cm_dd[nt_col]:
+        if obs_nt != ref_nt:
+          ct = cm_dd[nt_col][obs_nt]
+          # if ct / tot > 0.01 and ct < max(3, tot * 0.001 * 2):
+            # if '%s,%s' % (nt_col, obs_nt) in tm:
+              # import code; code.interact(local=dict(globals(), **locals()))
 
     if len(bad_nt_cols) > 0:
       t = t[[col for col in t.columns if col not in bad_nt_cols]]
