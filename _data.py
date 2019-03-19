@@ -112,20 +112,51 @@ def get_lib_design(nm):
   seq_col = [s for s in lib_design.columns if 'Sequence context' in s][0]
   return lib_design, seq_col
 
-def get_lib_nm(nm):
+def get_l1_nm(nm):
   level, row = check_valid_and_fetch_level(nm)
   if level is None:
-    return None, None
+    return None
 
   if level == 'L1':
     l1_nm = nm
   elif level == 'L2':
     row = group_design[group_design['Name'] == nm].iloc[0]
     l1_nm = row['Item1']
+  return l1_nm
+
+def get_editor_type(nm):
+  l1_nm = get_l1_nm(nm)
 
   row = exp_design[exp_design['Name'] == l1_nm].iloc[0]
-  lib_nm = row['Library']
+  editor_nm = row['Editor']
 
+  editor_types = {
+    'CtoTeditor': [
+      'AID',
+      'CDA',
+      'BE4',
+      'evoAPOBEC',
+      'BE4-CP1028',
+      'eA3A',
+    ],
+    'AtoGeditor': [
+      'ABE',
+      'ABE-CP1040',
+    ],
+    'Cas9': [
+      'Cas9',
+    ]
+  }
+
+  for typ in editor_types:
+    if editor_nm in editor_types[typ]:
+      return typ
+  return None
+
+def get_lib_nm(nm):
+  l1_nm = get_l1_nm(nm)
+  row = exp_design[exp_design['Name'] == l1_nm].iloc[0]
+  lib_nm = row['Library']
   return lib_nm
 
 
@@ -139,7 +170,7 @@ def idx_to_pos(idx, nm):
 
   zero_pos = {
     'LibA': 10,
-    '12kChar': 22,
+    '12kChar': 21,
     'CtoT': 10,
     'AtoG': 10,
     'PAMvar': 13,
