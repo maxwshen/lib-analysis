@@ -7,9 +7,10 @@ import numpy as np
 from collections import defaultdict
 from mylib import util
 import pandas as pd
+import sklearn
 
 # Default params
-inp_dir = _config.DATA_DIR
+inp_dir = _config.OUT_PLACE
 NAME = util.get_fn(__file__)
 out_dir = _config.OUT_PLACE + NAME + '/'
 util.ensure_dir_exists(out_dir)
@@ -19,47 +20,41 @@ import _data
 nts = list('ACGT')
 nt_to_idx = {nts[s]: s for s in range(len(nts))}
 
+treat_control_df = pd.read_csv(_config.DATA_DIR + 'treatment_control_design.csv', index_col = 0)
+exp_design_df = pd.read_csv(_config.DATA_DIR + 'master_exp_design.csv', index_col = 0)
+
+
 ##
-# Form groups
+# Primary logic
 ##
-def form_data(exp_nm):
-  data = _data.load_data(exp_nm, 'ag4a2_adjust_batch_effects')
+def indel_poswise(exp_nm):
+  try:
+    ipw_data = _data.load_data(exp_nm, 'h4_poswise_del')
+  except:
+    print('Error : could not load data')
+    sys.exit(1)
+
   lib_design, seq_col = _data.get_lib_design(exp_nm)
 
-  nms = lib_design['Name (unique)']
-  seqs = lib_design[seq_col]
-  nm_to_seq = {nm: seq for nm, seq in zip(nms, seqs)}
-
-  ''' 
-    g4 format: data is a dict, keys = target site names
-    values = np.array with shape = (target site len, 4)
-      entries = int for num. Q30 observations
-  '''
-
   dd = defaultdict(list)
+  timer = util.Timer(total = len(ipw_data))
+  for target_nm in ipw_data:
+    pw = ipw_data[target_nm]
 
-  timer = util.Timer(total = len(data))
-  for nm in data:
-    pw = data[nm]
-    seq = nm_to_seq[nm]
+    for pos in range(len(pw)):
+      tot_count = sum(pw[pos])
+      del_count = pw[pos][-1]
 
-    for jdx in range(len(pw)):
-      pos = _data.idx_to_pos(jdx, exp_nm)
-      ref_nt = seq[jdx]
-      ref_idx = nt_to_idx[ref_nt]
-      total = sum(pw[jdx])
-      for kdx in range(len(pw[jdx])):
-        if kdx == ref_idx:
-          continue
+      true_pos = _data.idx_to_pos(pos, exp_nm)
+      dd['Position'].append(true_pos)
+      dd['Total count'].append(tot_count)
+      dd['Deletion count'].append(del_count)
+      dd['Name'].append(target_nm)
 
-        count = pw[jdx][kdx]
-
-        dd['Count'].append(count)
-        dd['Total count'].append(total)
-        dd['Obs nt'].append(nts[kdx])
-        dd['Ref nt'].append(ref_nt)
-        dd['Position'].append(pos)
-        dd['Name'].append(nm)
+      if tot_count > 0:
+        dd['Deletion frequency'].append(del_count / tot_count)
+      else:
+        dd['Deletion frequency'].append(np.nan)
 
     timer.update()
 
@@ -80,14 +75,9 @@ def gen_qsubs():
   util.ensure_dir_exists(qsubs_dir)
   qsub_commands = []
 
-  # Generate qsubs only for unfinished jobs
-  treat_control_df = pd.read_csv(_config.DATA_DIR + 'treatment_control_design.csv', index_col = 0)
-
   num_scripts = 0
-  for idx, row in treat_control_df.iterrows():
-    treat_nm = row['Treatment']
-    if 'Cas9' in treat_nm:
-      continue
+  for idx, row in exp_design_df.iterrows():
+    treat_nm = row['Name']
 
     command = 'python %s.py %s' % (NAME, treat_nm)
     script_id = NAME.split('_')[0]
@@ -118,8 +108,8 @@ def gen_qsubs():
 def main(exp_nm = ''):
   print(NAME)
   
-  # Function calls
-  form_data(exp_nm)
+  indel_poswise(exp_nm)
+
 
   return
 

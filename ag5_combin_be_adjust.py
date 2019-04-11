@@ -18,37 +18,261 @@ util.ensure_dir_exists(out_dir)
 import _data
 
 ##
-# Functions
+# Statistics
 ##
-def get_significant_poswise_muts(df):
-  dd = defaultdict(lambda: defaultdict(lambda: 0))
-  nt_cols = [s for s in df.columns if s != 'Count']
-  for idx, row in df.iterrows():
-    count = row['Count']
-    for nt_col in nt_cols:
-      obs_nt = row[nt_col]
-      if obs_nt != '.':
-        dd[nt_col][obs_nt] += count
+def binom_minus_binom_pval(obs_count, t_bin_p, c_bin_p, tot):
+  obs_count = int(np.floor(obs_count))
 
-  sig_muts = []      
-  for nt_col in dd:
-    ref_nt = nt_col[0]
-    tot = sum(dd[nt_col].values())
-    for obs_nt in dd[nt_col]:
+  ptot = 0
+  p = 1
+  idx = 0
+  while p > 1e-6:
+    # ex: p(control = 0 and treatment >= 4) + ...
+    # sf (survival function) = 1 - cdf, where cdf is p(<= threshold)
+    treatment_tail = binom.sf(idx + obs_count - 1, tot, t_bin_p)
+    p = binom.pmf(idx, tot, c_bin_p) * treatment_tail
+    ptot += p
+    idx += 1
+
+  return ptot
+
+def gather_stats_binom_control_muts(t, c, seq, treat_nm, nm, decisions):
+  '''
+    Filter treatment mutations that can be explained by control freq.
+    In practice, this step is most effective for control mutations
+    with relatively high frequency => relatively high variance
+
+    Considers all events that occur (fq > 0%) in both control and treatment data
+  '''
+  fpr_threshold_try1 = 0.10
+
+  mut_cols = [s for s in t.columns if s not in ['Count']]
+  for col in mut_cols:
+    ref_nt = col[0]
+    t_tot = sum(t[~(t[col] == '.')]['Count'])
+    c_tot = sum(c[~(c[col] == '.')]['Count'])
+
+    if t_tot == 0 or c_tot == 0:
+      continue
+
+    for obs_nt in list('ACGT'):
+      if obs_nt == ref_nt:
+        continue
+      c_fq = sum(c[c[col] == obs_nt]['Count']) / c_tot
+      t_fq = sum(t[t[col] == obs_nt]['Count']) / t_tot
+      t_count = sum(t[t[col] == obs_nt]['Count'])
+      c_count = sum(c[c[col] == obs_nt]['Count'])
+      
+      pval = binom.sf(t_count - 1, t_tot, c_fq)
+
+      if c_fq > 0:
+        decisions['obs_nt'].append(obs_nt)
+        decisions['ref_nt'].append(ref_nt)
+        decisions['c_fq'].append(c_fq)
+        decisions['c_ct'].append(c_count)
+        decisions['t_fq'].append(t_fq)
+        decisions['t_ct'].append(t_count)
+        decisions['c_tot'].append(c_tot)
+        decisions['t_tot'].append(t_tot)
+        decisions['col'].append(col)
+        decisions['pos'].append(col[1:])
+        decisions['pval'].append(pval)
+        decisions['nm'].append(nm)
+
+  return
+
+def gather_stats_illumina_errors(t, c, t_minq, c_minq, seq, treat_nm, nm, decisions):
+  '''
+    Identify mutations explainable by Illumina sequencing error
+    Filtered at Q30 (1e-3), most columns have minimum
+    Q = 32 (6e-4), or
+    Q = 36 (2e-4)
+
+    Considers all events (>0 freq.) in treatment data.
+  '''
+  fpr_threshold = 0.05
+  mut_cols = [s for s in t.columns if s not in ['Count']]
+  for col in mut_cols:
+    ref_nt = col[0]
+    t_tot = sum(t[~(t[col] == '.')]['Count'])
+    if t_tot == 0:
+      continue
+
+    t_bin_p = 10**(-t_minq[col] / 10)
+    try:
+      c_bin_p = 10**(-c_minq[col] / 10)
+    except KeyError:
+      c_bin_p = 10**(-30/10)
+
+    for obs_nt in list('ACGT'):
       if obs_nt == ref_nt:
         continue
 
-      num = dd[nt_col][obs_nt]
-      threshold = max(3, tot * 0.001 * 2)
-      if num >= threshold:
-        sig_muts.append('%s,%s' % (nt_col, obs_nt))
+      count_t = sum(t[t[col] == obs_nt]['Count'])
 
-  return sig_muts, dd
+      if count_t > 0:
+        t_fq = count_t / t_tot
+
+        pval = binom_minus_binom_pval(count_t, t_bin_p, c_bin_p, t_tot)
+
+        decisions['obs_nt'].append(obs_nt)
+        decisions['ref_nt'].append(ref_nt)
+        decisions['t_bin_p'].append(t_bin_p)
+        decisions['c_bin_p'].append(c_bin_p)
+        decisions['t_ct'].append(count_t)
+        decisions['t_fq'].append(t_fq)
+        decisions['t_tot'].append(t_tot)
+        decisions['col'].append(col)
+        decisions['pos'].append(col[1:])
+        decisions['pval'].append(pval)
+        decisions['nm'].append(nm)
+  return
 
 
+##
+# Filters
+##
+def filter_high_control_muts(t, c, seq, treat_nm, nm, decisions):
+  '''
+    Filter positions with very high control mut freq. 
+    with significant support from readcounts
+  '''
+  max_control_mut_fq = 0.05
+
+  t = t.drop(columns = 'index')
+  c = c.drop(columns = 'index')
+  mut_cols = [s for s in t.columns if s not in ['Count']]
+
+  for col in mut_cols:
+    ref_nt = col[0]
+    t_tot = sum(t[~(t[col] == '.')]['Count'])
+    c_tot = sum(c[~(c[col] == '.')]['Count'])
+
+    wipe_col = False
+    c_nts = set(c[col])
+    if '.' in c_nts:
+      c_nts.remove('.')
+
+    for c_nt in c_nts:
+      if c_nt == ref_nt:
+        continue
+      c_fq = sum(c[c[col] == c_nt]['Count']) / c_tot
+
+      if c_fq > 0:
+        decisions['obs_nt'].append(c_nt)
+        decisions['ref_nt'].append(ref_nt)
+        decisions['c_fq'].append(c_fq)
+        decisions['c_tot'].append(c_tot)
+        decisions['col'].append(col)
+        decisions['pos'].append(col[1:])
+        decisions['nm'].append(nm)
+
+        if c_fq >= max_control_mut_fq:
+          wipe_col = True
+          decisions['wiped'].append(True)
+        else:
+          decisions['wiped'].append(False)
+
+    if wipe_col:
+      t[col] = '.'
+      t = t.groupby(mut_cols)['Count'].agg('sum').reset_index().sort_values(by = 'Count', ascending = False).reset_index(drop = True)
+  return t
+
+def subtract_treatment_control(t, c, seq):
+  mut_cols = [s for s in t.columns if s not in ['Count']]
+  c = c[mut_cols + ['Count']]
+
+  t = t.groupby(mut_cols)['Count'].agg('sum').reset_index().sort_values(by = 'Count', ascending = False).reset_index(drop = True)
+  c = c.groupby(mut_cols)['Count'].agg('sum').reset_index().sort_values(by = 'Count', ascending = False).reset_index(drop = True)
+
+  mdf = t.merge(c, on = mut_cols, how = 'outer', suffixes = ('_t', '_c'))
+  mdf = mdf.fillna(value = 0)
+
+  # Rescale readcounts in control to treatment's scale
+  mdf['Count_c'] = (mdf['Count_c'] / sum(mdf['Count_c'])) * sum(mdf['Count_t'])
+
+  # Do not subtract counts from rows with no mismatches
+  annot = []
+  for idx, row in mdf.iterrows():
+    has_mut = False
+    for col in mut_cols:
+      ref_nt = col[0]
+      obs_nt = row[col]
+      if obs_nt != '.' and obs_nt != ref_nt:
+        has_mut = True
+    annot.append(has_mut)
+  mdf['Has mutation'] = annot
+
+  wt_part = mdf[mdf['Has mutation'] == False]
+  wt_part = wt_part.drop(columns = ['Has mutation', 'Count_c'])
+
+  # Adjust treatment by control, zero'ing out negative values
+  mut_part = mdf[mdf['Has mutation'] == True]
+  mut_part['Count_t'] -= mut_part['Count_c']
+  mut_part = mut_part[mut_part['Count_t'] > 0]
+  mut_part = mut_part.drop(columns = ['Has mutation', 'Count_c'])
+
+  # Recombine
+  mdf = wt_part.append(mut_part, ignore_index = True)
+  mdf = mdf.sort_values(by = 'Count_t')
+  mdf = mdf.reset_index(drop = True)
+
+  mdf['Count'] = mdf['Count_t']
+  mdf = mdf.drop(columns = 'Count_t')
+
+  t = mdf
+
+  return t
+
+
+def filter_binom_control_muts(to_remove, adj_d, control_data, nm_to_seq):
+  timer = util.Timer(total = len(to_remove))
+  for idx, row in to_remove.iterrows():
+    nm = row['nm']
+
+    t = adj_d[nm]
+    c = control_data[nm]
+    seq = nm_to_seq[nm]
+
+    col_nm = row['col']
+    obs_nt = row['obs_nt']
+
+    t.loc[t[col_nm] == obs_nt, col_nm] = '.'
+
+    adj_d[nm] = t
+    timer.update()
+
+  return adj_d
+
+def filter_illumina_error_muts(to_remove, adj_d, control_data, nm_to_seq):
+  timer = util.Timer(total = len(to_remove))
+  for idx, row in to_remove.iterrows():
+    nm = row['nm']
+
+    t = adj_d[nm]
+    c = control_data[nm]
+    seq = nm_to_seq[nm]
+
+    col_nm = row['col']
+    obs_nt = row['obs_nt']
+
+    ref_nt = col_nm[0]
+    t.loc[t[col_nm] == obs_nt, col_nm] = ref_nt
+
+    adj_d[nm] = t
+    timer.update()
+
+  return adj_d
+
+##
+# Main iterator
+##
 def adjust_treatment_control(treat_nm, control_nm):
   treat_data = _data.load_data(treat_nm, 'g5_combin_be')
   control_data = _data.load_data(control_nm, 'g5_combin_be')
+
+  treat_minq = _data.load_minq(treat_nm, 'g5_combin_be')
+  control_minq = _data.load_minq(control_nm, 'g5_combin_be')
 
   lib_design, seq_col = _data.get_lib_design(treat_nm)
 
@@ -59,10 +283,19 @@ def adjust_treatment_control(treat_nm, control_nm):
 
   adj_d = dict()
   stats_dd = defaultdict(list)
+  hc_decisions = defaultdict(list)
+  nm_to_seq = dict()
 
+
+  '''
+    Filter positions with abnormally high control mut freq. 
+  '''
+  print('Filtering positions with high frequency control mutations...')
   timer = util.Timer(total = len(lib_design))
   for idx, row in lib_design.iterrows():
     nm = row['Name (unique)']
+    seq = row[seq_col]
+    nm_to_seq[nm] = seq
     timer.update()
 
     stats_dd['Name'].append(nm)
@@ -78,81 +311,148 @@ def adjust_treatment_control(treat_nm, control_nm):
       continue
 
     stats_dd['Status'].append('Adjusted')
-
     c = control_data[nm]
-    if 'index' in t.columns:
-      t = t.drop(columns = ['index'])
-      c = c.drop(columns = ['index'])
 
-    c = c[t.columns]
-
-    nt_cols = [s for s in t.columns if s != 'Count']
-    c = c.groupby(nt_cols)['Count'].sum()
-    c = c.reset_index()
-
-    # Detect columns with high mutation rate in control
-    cm, cm_dd = get_significant_poswise_muts(c)
-    tm, _ = get_significant_poswise_muts(t)
-
-    bad_nt_cols = []
-    for sig_mut in cm:
-      if sig_mut in tm:
-        [nt_col, obs_nt] = sig_mut.split(',')
-        bad_nt_cols.append(nt_col)
-
-    # Check corner case
-    for nt_col in cm_dd:
-      tot = sum(cm_dd[nt_col].values())
-      ref_nt = nt_col[0]
-      for obs_nt in cm_dd[nt_col]:
-        if obs_nt != ref_nt:
-          ct = cm_dd[nt_col][obs_nt]
-          # if ct / tot > 0.01 and ct < max(3, tot * 0.001 * 2):
-            # if '%s,%s' % (nt_col, obs_nt) in tm:
-              # import code; code.interact(local=dict(globals(), **locals()))
-
-    if len(bad_nt_cols) > 0:
-      t = t[[col for col in t.columns if col not in bad_nt_cols]]
-      c = c[[col for col in c.columns if col not in bad_nt_cols]]
-
-      nt_cols = [s for s in t.columns if s != 'Count']
-      if len(nt_cols) > 0:
-        c = c.groupby(nt_cols)['Count'].sum().reset_index()
-        t = t.groupby(nt_cols)['Count'].sum().reset_index()
-      else:
-        t = pd.DataFrame()
-        continue
-
-
-    # # Convert control to fractions
-    # c['Count'] /= sum(c['Count'])
-
-    # # Convert to readcounts using total treatment readcount as denominator  
-    # c['Count'] *= sum(t['Count'])
-
-    # # Zero out wild-type elements
-    # pass
-
-    # # Adjust treatment by control
-    # c = c.set_index(nt_cols)
-    # t = t.set_index(nt_cols)
-    # t = t.subtract(c, fill_value = 0)
-
-    # # Remove negative values
-    # t = t[t['Count'] >= 0]
-
-    t = t.sort_values(by = 'Count', ascending = False)
-    t = t.reset_index()
-    if 'index' in t.columns:
-      t = t.drop(columns = ['index'])
-
+    # Adjust
+    t = filter_high_control_muts(t, c, seq, treat_nm, nm, hc_decisions)
     adj_d[nm] = t
-
-  with open(out_dir + '%s.pkl' % (treat_nm), 'wb') as f:
-    pickle.dump(adj_d, f)
 
   stats_df = pd.DataFrame(stats_dd)
   stats_df.to_csv(out_dir + '%s_stats.csv' % (treat_nm))
+
+  hc_df = pd.DataFrame(hc_decisions)
+  hc_df = hc_df.sort_values(by = 'c_fq', ascending = False)
+  hc_df = hc_df.reset_index(drop = True)
+  hc_df.to_csv(out_dir + '%s_hc_dec.csv' % (treat_nm))
+
+  '''
+    Filter treatment mutations that can be explained by control freq.
+    In practice, this step is most effective for control mutations
+    with relatively high frequency => relatively high variance
+  '''
+  print('Gathering statistics on treatment mutations explained by control mutations...')
+  bc_decisions = defaultdict(list)
+  timer = util.Timer(total = len(adj_d))
+  for nm in adj_d:
+    t = adj_d[nm]
+    if nm not in control_data:
+      continue
+    c = control_data[nm]
+    seq = nm_to_seq[nm]
+
+    gather_stats_binom_control_muts(t, c, seq, treat_nm, nm, bc_decisions)
+    timer.update()
+
+  '''
+    Using global statistics, filter mutations
+    while controlling false discovery rate
+  '''
+  bc_fdr_threshold = 0.05
+  bc_df = pd.DataFrame(bc_decisions)
+  other_distribution = bc_df[bc_df['pval'] > 0.995]
+  bc_df = bc_df[bc_df['pval'] <= 0.995]
+  bc_df = bc_df.sort_values(by = 'pval')
+  bc_df = bc_df.reset_index(drop = True)
+
+  fdr_decs, hit_reject = [], False
+  for idx, pval in enumerate(bc_df['pval']):
+    if hit_reject:
+      dec = False
+    else:
+      fdr_critical = ((idx + 1) / len(bc_df)) * bc_fdr_threshold
+      dec = bool(pval <= fdr_critical)
+    fdr_decs.append(dec)
+    if dec is False and hit_reject is True:
+      hit_reject = False
+  bc_df['FDR accept'] = fdr_decs
+
+  other_distribution['FDR accept'] = False
+  bc_df = bc_df.append(other_distribution, ignore_index = True)
+  bc_df.to_csv(out_dir + '%s_bc_dec.csv' % (treat_nm))
+
+  print('Filtering treatment mutations explained by control mutations...')
+  to_remove = bc_df[bc_df['FDR accept'] == False]
+  adj_d = filter_binom_control_muts(to_remove, adj_d, control_data, nm_to_seq)
+
+
+  '''
+  '''
+  print('Subtracting control from treatment data...')
+  timer = util.Timer(total = len(adj_d))
+  for nm in adj_d:
+    t = adj_d[nm]
+    if nm not in control_data:
+      continue
+    c = control_data[nm]
+    seq = nm_to_seq[nm]
+
+    t = subtract_treatment_control(t, c, seq)
+    adj_d[nm] = t
+    timer.update()
+
+
+  '''
+    Filter treatment mutations that are best explained by 
+    spontaneous random mutations.
+    Tend to be very low frequency with no counterpart in control
+  '''
+  print('Gathering statistics on treatment mutations explained by Illumina sequencing errors...')
+  ie_decisions = defaultdict(list)
+  timer = util.Timer(total = len(adj_d))
+  for nm in adj_d:
+    t = adj_d[nm]
+    if nm not in control_data:
+      continue
+    c = control_data[nm]
+    seq = nm_to_seq[nm]
+    c_minq = control_minq[nm]
+    t_minq = treat_minq[nm]
+
+    gather_stats_illumina_errors(t, c, t_minq, c_minq, seq, treat_nm, nm, ie_decisions)
+    timer.update()
+
+  ie_fdr_threshold = 0.05
+  ie_df = pd.DataFrame(ie_decisions)
+  other_distribution = ie_df[ie_df['pval'] > 0.995]
+  ie_df = ie_df[ie_df['pval'] <= 0.995]
+  ie_df = ie_df.sort_values(by = 'pval')
+  ie_df = ie_df.reset_index(drop = True)
+
+  fdr_decs, hit_reject = [], False
+  for idx, pval in enumerate(ie_df['pval']):
+    if hit_reject:
+      dec = False
+    else:
+      fdr_critical = ((idx + 1) / len(ie_df)) * ie_fdr_threshold
+      dec = bool(pval <= fdr_critical)
+    fdr_decs.append(dec)
+    if dec is False and hit_reject is True:
+      hit_reject = False
+  ie_df['FDR accept'] = fdr_decs
+
+  other_distribution['FDR accept'] = False
+  ie_df = ie_df.append(other_distribution, ignore_index = True)
+  ie_df.to_csv(out_dir + '%s_ie_dec.csv' % (treat_nm))
+
+  print('Filtering treatment mutations explained by Illumina sequencing errors...')
+  to_remove = ie_df[ie_df['FDR accept'] == False]
+  adj_d = filter_illumina_error_muts(to_remove, adj_d, control_data, nm_to_seq)
+
+  ##
+  # Cleanup
+  ##
+  for nm in adj_d:
+    t = adj_d[nm]
+    t = t[t['Count'] > 0]
+    mut_cols = [s for s in t.columns if s not in ['Count']]
+    t = t.groupby(mut_cols)['Count'].agg('sum').reset_index().sort_values(by = 'Count', ascending = False).reset_index(drop = True)
+    adj_d[nm] = t
+
+  ##
+  # Write
+  ##
+  with open(out_dir + '%s.pkl' % (treat_nm), 'wb') as f:
+    pickle.dump(adj_d, f)
 
   return
 
@@ -169,6 +469,48 @@ def gen_qsubs():
   # Generate qsubs only for unfinished jobs
   treat_control_df = pd.read_csv(_config.DATA_DIR + 'treatment_control_design.csv', index_col = 0)
 
+  # Empirically determined
+  # pickle > 37 mb: needs 4 gb ram
+  # pickle > 335 mb: needs 8 gb ram
+
+  custom_ram = {
+    '190103_mES_AtoG_ABE': 4,
+    '190103_mES_AtoG_ABE-CP1040': 4,
+    '190103_mES_CtoT_AID': 4,
+    '190103_mES_CtoT_BE4': 4,
+    '190103_mES_CtoT_BE4-CP1028': 4,
+    '190103_mES_CtoT_CDA': 4,
+    '190103_mES_CtoT_eA3a': 4,
+    '190103_mES_CtoT_evoAPOBEC': 4,
+    '190103_U2OS_12kChar_AID': 4,
+    '190103_U2OS_12kChar_BE4-CP1028': 4,
+    '190103_U2OS_12kChar_CDA': 4,
+    '190103_U2OS_12kChar_eA3A': 4,
+    '190103_U2OS_12kChar_evoAPOBEC': 4,
+    '190103_U2OS_CtoT_AID': 4,
+    '190103_U2OS_CtoT_BE4': 4,
+    '190103_U2OS_CtoT_BE4-CP1028': 4,
+    '190103_U2OS_CtoT_CDA': 4,
+    '190103_U2OS_CtoT_evoAPOBEC': 4,
+    '190204_mES_12kChar_ABE': 8,  # 500 mb pickle
+    '190204_mES_12kChar_BE4': 8,
+    '190204_mES_AtoG_ABE': 4,
+    '190204_mES_AtoG_ABE-CP1040': 4,
+    '190307_HEK_CtoT_BE4': 4,
+    '190307_mES_12kChar_ABE': 8,
+    '190307_mES_12kChar_BE4': 8,
+    '190307_U2OS_12kChar_ABE': 4,
+    '190307_U2OS_12kChar_BE4': 4,
+    '190329_HEK293T_AtoG_ABE': 4,
+    '190329_HEK293T_AtoG_ABE-CP1040': 4,
+    '190329_mES_12kChar_AID': 8,  # 335 mb pickle
+    '190329_mES_12kChar_CDA': 4,  # 230 mb pickle
+    '190329_U2OS_12kChar_AID': 4,
+    '190329_U2OS_12kChar_CDA': 4,
+  }
+
+  # completed = ['171027_HEK293T_LibA_ABE', '171027_HEK293T_LibA_BE4', '180802_HEK293T_LibA_AID', '180802_HEK293T_LibA_CDA', '180802_HEK293T_LibA_evoAPOBEC', '190103_HEK293T_12kChar_ABE-CP104', '190103_HEK293T_12kChar_ABE', '190103_HEK293T_12kChar_AID', '190103_HEK293T_12kChar_BE4-CP1028', '190103_HEK293T_12kChar_BE4', '190103_HEK293T_12kChar_CDA', '190103_HEK293T_12kChar_eA3A', '190103_HEK293T_12kChar_evoAPOBEC', '190103_HEK293T_AtoG_ABE-CP1040', '190103_HEK293T_AtoG_ABE', '190103_HEK293T_CtoT_AID', '190103_HEK293T_CtoT_BE4-CP1028', '190103_HEK293T_CtoT_BE4', '190103_HEK293T_CtoT_CDA', '190103_HEK293T_CtoT_eA3A', '190103_HEK293T_CtoT_evoAPOBEC', '190103_U2OS_12kChar_ABE-CP1040', '190103_U2OS_12kChar_ABE', '190103_U2OS_12kChar_AID', '190103_U2OS_12kChar_BE4-CP1028', '190103_U2OS_12kChar_BE4', '190103_U2OS_12kChar_CDA', '190103_U2OS_12kChar_eA3A', '190103_U2OS_12kChar_evoAPOBEC', '190103_U2OS_AtoG_ABE-CP1040', '190103_U2OS_AtoG_ABE', '190103_U2OS_CtoT_AID', '190103_U2OS_CtoT_BE4-CP1028', '190103_U2OS_CtoT_BE4', '190103_U2OS_CtoT_CDA', '190103_U2OS_CtoT_eA3A', '190103_U2OS_CtoT_evoAPOBEC', '190103_mES_AtoG_ABE-CP1040', '190204_U2OS_CtoT_AID', '190204_U2OS_CtoT_BE4-CP1028', '190204_U2OS_CtoT_BE4', '190204_U2OS_CtoT_CDA', '190204_U2OS_CtoT_eA3A', '190204_U2OS_CtoT_evoAPOBEC', '190204_mES_AtoG_ABE-CP1040', '190307_U2OS_12kChar_ABE', '190307_U2OS_12kChar_BE4', '190329_U2OS_12kChar_AID', '190329_U2OS_12kChar_CDA']
+
   num_scripts = 0
   for idx, row in treat_control_df.iterrows():
     treat_nm, control_nm = row['Treatment'], row['Control']
@@ -177,9 +519,16 @@ def gen_qsubs():
       continue
     if 'Cas9' in treat_nm:
       continue
+    # if treat_nm in completed:
+      # continue
 
     command = 'python %s.py %s %s' % (NAME, treat_nm, control_nm)
     script_id = NAME.split('_')[0]
+
+    if treat_nm not in custom_ram:
+      ram_gb = 2
+    else:
+      ram_gb = custom_ram[treat_nm]
 
     # Write shell scripts
     sh_fn = qsubs_dir + 'q_%s_%s_%s.sh' % (script_id, treat_nm, control_nm)
@@ -188,7 +537,7 @@ def gen_qsubs():
     num_scripts += 1
 
     # Write qsub commands
-    qsub_commands.append('qsub -V -l h_rt=4:00:00,h_vmem=2G -wd %s %s &' % (_config.SRC_DIR, sh_fn))
+    qsub_commands.append('qsub -V -l h_rt=16:00:00,h_vmem=%sG -wd %s %s &' % (ram_gb, _config.SRC_DIR, sh_fn))
 
   # Save commands
   commands_fn = qsubs_dir + '_commands.sh'

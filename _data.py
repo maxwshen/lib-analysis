@@ -51,6 +51,7 @@ def load_data(nm, data_nm):
   scripts_base = [
     'g4_poswise_be', 
     'g5_combin_be', 
+    'h4_poswise_del',
   ]
   if data_nm in scripts_base:
     fn = prj_dir + '%s/out/%s/%s.pkl' % (row['Group'], data_nm, row['Local name'])
@@ -64,7 +65,10 @@ def load_data(nm, data_nm):
   scripts_adjust = [
     'ag4_poswise_be_adjust', 
     'ag5_combin_be_adjust', 
-    'ae_newgenotype_Cas9_adjust'
+    'ae_newgenotype_Cas9_adjust',
+    'ag4b_adjust_background',
+    # 'ag4e_find_highfreq_batcheffects',
+    'ag4a2_adjust_batch_effects',
   ]
   if data_nm in scripts_adjust:
     if level == 'L1':
@@ -159,22 +163,38 @@ def get_lib_nm(nm):
   lib_nm = row['Library']
   return lib_nm
 
+def get_ontarget_sites(lib_design, lib_nm):
+  if lib_nm == '12kChar':
+    otcats = ['satmut']
+  elif lib_nm == 'AtoG':
+    otcats = list(set(lib_design['Design category']))
+  elif lib_nm == 'CtoT':
+    otcats = list(set(lib_design['Design category']))
+  elif lib_nm == 'LibA':
+    otcats = list(set(lib_design['Design category']))
+
+  return lib_design[lib_design['Design category'].isin(otcats)]['Name (unique)']
+
 
 # Caching
 lib_nms = dict()
+
+zero_pos = {
+  'LibA': 9,
+  '12kChar': 21,
+  'CtoT': 10,
+  'AtoG': 10,
+  'PAMvar': 12,
+}
 
 def idx_to_pos(idx, nm):
   if nm not in lib_nms:
     lib_nms[nm] = get_lib_nm(nm)
   lib_nm = lib_nms[nm]
-
-  zero_pos = {
-    'LibA': 10,
-    '12kChar': 21,
-    'CtoT': 10,
-    'AtoG': 10,
-    'PAMvar': 13,
-  }
-
   return idx - zero_pos[lib_nm]
 
+def pos_to_idx(pos, nm):
+  if nm not in lib_nms:
+    lib_nms[nm] = get_lib_nm(nm)
+  lib_nm = lib_nms[nm]
+  return pos + zero_pos[lib_nm]  
