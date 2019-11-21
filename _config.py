@@ -35,3 +35,5 @@ QSUBS_DIR += DATA_FOLD
 # Project-specific parameters
 #######################################################
 
+COMBIN_MODEL_DIR = '/ahg/regevdata/projects/CRISPR-libraries/prj/lib-modeling/portable_modeling/'
+ANYEDIT_MODEL_DIR = '/ahg/regevdata/projects/CRISPR-libraries/prj/lib-modeling/'

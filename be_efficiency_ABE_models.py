@@ -50,7 +50,9 @@ def train_models(exp_nm, data, mut, ml_task):
       'GBTR': GradientBoostingRegressor(),
     }
     data = data[data['Frequency'] > 0]
-    data['y'] = data['Frequency']
+    data = data[data['Frequency'] < 1]
+    from scipy.special import logit
+    data['y'] = logit(data['Frequency'])
     evals = {
       'spearmanr': lambda t, p: spearmanr(t, p)[0],
       'pearsonr': lambda t, p: pearsonr(t, p)[0],
@@ -164,12 +166,12 @@ def gather_statistics(exp_nm, params):
   data['MutName'] = data['Name'].astype(str) + '_' + data['Position'].astype(str) + '_' + data['Mutation']
 
   # Annotate with local sequence context
-  lib_zero_idx = _data.pos_to_idx(0, exp_nm)
   dd = defaultdict(list)
   print('Annotating data with local sequence contexts...')
   timer = util.Timer(total = len(data))
   for idx, row in data.iterrows():
     seq = nm_to_seq[row['Name']]
+    lib_zero_idx = _data.pos_to_idx_safe(0, exp_nm, row['Name'])
     pidx = row['Position'] + lib_zero_idx
     local_context = seq[pidx - feature_radius : pidx] + seq[pidx + 1 : pidx + feature_radius + 1]
     dd['Local context'].append(local_context)
@@ -231,7 +233,7 @@ def gen_qsubs():
     num_scripts += 1
 
     # Write qsub commands
-    qsub_commands.append('qsub -V -l h_rt=4:00:00,h_vmem=1G -wd %s %s &' % (_config.SRC_DIR, sh_fn))
+    qsub_commands.append('qsub -V -P regevlab -l h_rt=4:00:00,h_vmem=1G -wd %s %s &' % (_config.SRC_DIR, sh_fn))
 
   # Save commands
   commands_fn = qsubs_dir + '_commands.sh'

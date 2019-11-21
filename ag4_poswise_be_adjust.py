@@ -227,7 +227,7 @@ def adjust_treatment_control(treat_nm, control_nm):
   treat_minq = _data.load_minq(treat_nm, 'g4_poswise_be')
   control_minq = _data.load_minq(control_nm, 'g4_poswise_be')
 
-  lib_design, seq_col = _data.get_lib_design(treat_nm)
+  lib_design, seq_col = _data.get_g4_lib_design(treat_nm)
 
   adj_d = dict()
   stats_dd = defaultdict(list)
@@ -428,7 +428,7 @@ def gen_qsubs():
     num_scripts += 1
 
     # Write qsub commands
-    qsub_commands.append('qsub -V -l h_rt=2:00:00,h_vmem=2G -wd %s %s &' % (_config.SRC_DIR, sh_fn))
+    qsub_commands.append('qsub -V -P regevlab -l h_rt=2:00:00,h_vmem=2G -wd %s %s &' % (_config.SRC_DIR, sh_fn))
 
   # Save commands
   commands_fn = qsubs_dir + '_commands.sh'

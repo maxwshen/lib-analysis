@@ -36,6 +36,16 @@ def binom_minus_binom_pval(obs_count, t_bin_p, c_bin_p, tot):
 
   return ptot
 
+def get_poswise_stats(df, mut_cols):
+  stats = defaultdict(lambda: 0)
+  for idx, row in df.iterrows():
+    count = row['Count']
+    for col in mut_cols:
+      obs_nt = row[col]
+      stats['%s_%s' % (col, obs_nt)] += count
+      stats['%s_tot' % (col)] += count
+  return stats
+
 def gather_stats_binom_control_muts(t, c, seq, treat_nm, nm, decisions):
   '''
     Filter treatment mutations that can be explained by control freq.
@@ -46,11 +56,17 @@ def gather_stats_binom_control_muts(t, c, seq, treat_nm, nm, decisions):
   '''
   fpr_threshold_try1 = 0.10
 
+
   mut_cols = [s for s in t.columns if s not in ['Count']]
+
+  stats_c = get_poswise_stats(c, mut_cols)
+  stats_t = get_poswise_stats(t, mut_cols)
+
   for col in mut_cols:
     ref_nt = col[0]
-    t_tot = sum(t[~(t[col] == '.')]['Count'])
-    c_tot = sum(c[~(c[col] == '.')]['Count'])
+
+    t_tot = stats_t['%s_tot' % (col)]
+    c_tot = stats_c['%s_tot' % (col)]
 
     if t_tot == 0 or c_tot == 0:
       continue
@@ -58,10 +74,12 @@ def gather_stats_binom_control_muts(t, c, seq, treat_nm, nm, decisions):
     for obs_nt in list('ACGT'):
       if obs_nt == ref_nt:
         continue
-      c_fq = sum(c[c[col] == obs_nt]['Count']) / c_tot
-      t_fq = sum(t[t[col] == obs_nt]['Count']) / t_tot
-      t_count = sum(t[t[col] == obs_nt]['Count'])
-      c_count = sum(c[c[col] == obs_nt]['Count'])
+
+      c_count = stats_c['%s_%s' % (col, obs_nt)]
+      t_count = stats_t['%s_%s' % (col, obs_nt)]
+
+      c_fq = c_count / c_tot
+      t_fq = t_count / t_tot
       
       pval = binom.sf(t_count - 1, t_tot, c_fq)
 
@@ -92,9 +110,12 @@ def gather_stats_illumina_errors(t, c, t_minq, c_minq, seq, treat_nm, nm, decisi
   '''
   fpr_threshold = 0.05
   mut_cols = [s for s in t.columns if s not in ['Count']]
+
+  stats_t = get_poswise_stats(t, mut_cols)
+
   for col in mut_cols:
     ref_nt = col[0]
-    t_tot = sum(t[~(t[col] == '.')]['Count'])
+    t_tot = stats_t['%s_tot' % (col)]
     if t_tot == 0:
       continue
 
@@ -108,18 +129,18 @@ def gather_stats_illumina_errors(t, c, t_minq, c_minq, seq, treat_nm, nm, decisi
       if obs_nt == ref_nt:
         continue
 
-      count_t = sum(t[t[col] == obs_nt]['Count'])
+      t_count = stats_t['%s_%s' % (col, obs_nt)]
 
-      if count_t > 0:
-        t_fq = count_t / t_tot
+      if t_count > 0:
+        t_fq = t_count / t_tot
 
-        pval = binom_minus_binom_pval(count_t, t_bin_p, c_bin_p, t_tot)
+        pval = binom_minus_binom_pval(t_count, t_bin_p, c_bin_p, t_tot)
 
         decisions['obs_nt'].append(obs_nt)
         decisions['ref_nt'].append(ref_nt)
         decisions['t_bin_p'].append(t_bin_p)
         decisions['c_bin_p'].append(c_bin_p)
-        decisions['t_ct'].append(count_t)
+        decisions['t_ct'].append(t_count)
         decisions['t_fq'].append(t_fq)
         decisions['t_tot'].append(t_tot)
         decisions['col'].append(col)
@@ -182,8 +203,11 @@ def subtract_treatment_control(t, c, seq):
   mut_cols = [s for s in t.columns if s not in ['Count']]
   c = c[mut_cols + ['Count']]
 
-  t = t.groupby(mut_cols)['Count'].agg('sum').reset_index().sort_values(by = 'Count', ascending = False).reset_index(drop = True)
-  c = c.groupby(mut_cols)['Count'].agg('sum').reset_index().sort_values(by = 'Count', ascending = False).reset_index(drop = True)
+  t = t[t['Count'] > 0]
+  c = c[c['Count'] > 0]
+
+  t = t.groupby(mut_cols)['Count'].agg('sum').reset_index()
+  c = c.groupby(mut_cols)['Count'].agg('sum').reset_index()
 
   mdf = t.merge(c, on = mut_cols, how = 'outer', suffixes = ('_t', '_c'))
   mdf = mdf.fillna(value = 0)
@@ -214,8 +238,6 @@ def subtract_treatment_control(t, c, seq):
 
   # Recombine
   mdf = wt_part.append(mut_part, ignore_index = True)
-  mdf = mdf.sort_values(by = 'Count_t')
-  mdf = mdf.reset_index(drop = True)
 
   mdf['Count'] = mdf['Count_t']
   mdf = mdf.drop(columns = 'Count_t')
@@ -237,7 +259,11 @@ def filter_binom_control_muts(to_remove, adj_d, control_data, nm_to_seq):
     col_nm = row['col']
     obs_nt = row['obs_nt']
 
-    t.loc[t[col_nm] == obs_nt, col_nm] = '.'
+    # t.loc[t[col_nm] == obs_nt, col_nm] = '.'
+
+    for idx, row in t.iterrows():
+      if row[col_nm] == obs_nt:
+        row[col_nm] = '.'
 
     adj_d[nm] = t
     timer.update()
@@ -257,7 +283,12 @@ def filter_illumina_error_muts(to_remove, adj_d, control_data, nm_to_seq):
     obs_nt = row['obs_nt']
 
     ref_nt = col_nm[0]
-    t.loc[t[col_nm] == obs_nt, col_nm] = ref_nt
+
+    # t.loc[t[col_nm] == obs_nt, col_nm] = ref_nt
+
+    for idx, row in t.iterrows():
+      if row[col_nm] == obs_nt:
+        row[col_nm] = ref_nt
 
     adj_d[nm] = t
     timer.update()
@@ -439,16 +470,6 @@ def adjust_treatment_control(treat_nm, control_nm):
   adj_d = filter_illumina_error_muts(to_remove, adj_d, control_data, nm_to_seq)
 
   ##
-  # Cleanup
-  ##
-  for nm in adj_d:
-    t = adj_d[nm]
-    t = t[t['Count'] > 0]
-    mut_cols = [s for s in t.columns if s not in ['Count']]
-    t = t.groupby(mut_cols)['Count'].agg('sum').reset_index().sort_values(by = 'Count', ascending = False).reset_index(drop = True)
-    adj_d[nm] = t
-
-  ##
   # Write
   ##
   with open(out_dir + '%s.pkl' % (treat_nm), 'wb') as f:
@@ -469,48 +490,6 @@ def gen_qsubs():
   # Generate qsubs only for unfinished jobs
   treat_control_df = pd.read_csv(_config.DATA_DIR + 'treatment_control_design.csv', index_col = 0)
 
-  # Empirically determined
-  # pickle > 37 mb: needs 4 gb ram
-  # pickle > 335 mb: needs 8 gb ram
-
-  custom_ram = {
-    '190103_mES_AtoG_ABE': 4,
-    '190103_mES_AtoG_ABE-CP1040': 4,
-    '190103_mES_CtoT_AID': 4,
-    '190103_mES_CtoT_BE4': 4,
-    '190103_mES_CtoT_BE4-CP1028': 4,
-    '190103_mES_CtoT_CDA': 4,
-    '190103_mES_CtoT_eA3a': 4,
-    '190103_mES_CtoT_evoAPOBEC': 4,
-    '190103_U2OS_12kChar_AID': 4,
-    '190103_U2OS_12kChar_BE4-CP1028': 4,
-    '190103_U2OS_12kChar_CDA': 4,
-    '190103_U2OS_12kChar_eA3A': 4,
-    '190103_U2OS_12kChar_evoAPOBEC': 4,
-    '190103_U2OS_CtoT_AID': 4,
-    '190103_U2OS_CtoT_BE4': 4,
-    '190103_U2OS_CtoT_BE4-CP1028': 4,
-    '190103_U2OS_CtoT_CDA': 4,
-    '190103_U2OS_CtoT_evoAPOBEC': 4,
-    '190204_mES_12kChar_ABE': 8,  # 500 mb pickle
-    '190204_mES_12kChar_BE4': 8,
-    '190204_mES_AtoG_ABE': 4,
-    '190204_mES_AtoG_ABE-CP1040': 4,
-    '190307_HEK_CtoT_BE4': 4,
-    '190307_mES_12kChar_ABE': 8,
-    '190307_mES_12kChar_BE4': 8,
-    '190307_U2OS_12kChar_ABE': 4,
-    '190307_U2OS_12kChar_BE4': 4,
-    '190329_HEK293T_AtoG_ABE': 4,
-    '190329_HEK293T_AtoG_ABE-CP1040': 4,
-    '190329_mES_12kChar_AID': 8,  # 335 mb pickle
-    '190329_mES_12kChar_CDA': 4,  # 230 mb pickle
-    '190329_U2OS_12kChar_AID': 4,
-    '190329_U2OS_12kChar_CDA': 4,
-  }
-
-  # completed = ['171027_HEK293T_LibA_ABE', '171027_HEK293T_LibA_BE4', '180802_HEK293T_LibA_AID', '180802_HEK293T_LibA_CDA', '180802_HEK293T_LibA_evoAPOBEC', '190103_HEK293T_12kChar_ABE-CP104', '190103_HEK293T_12kChar_ABE', '190103_HEK293T_12kChar_AID', '190103_HEK293T_12kChar_BE4-CP1028', '190103_HEK293T_12kChar_BE4', '190103_HEK293T_12kChar_CDA', '190103_HEK293T_12kChar_eA3A', '190103_HEK293T_12kChar_evoAPOBEC', '190103_HEK293T_AtoG_ABE-CP1040', '190103_HEK293T_AtoG_ABE', '190103_HEK293T_CtoT_AID', '190103_HEK293T_CtoT_BE4-CP1028', '190103_HEK293T_CtoT_BE4', '190103_HEK293T_CtoT_CDA', '190103_HEK293T_CtoT_eA3A', '190103_HEK293T_CtoT_evoAPOBEC', '190103_U2OS_12kChar_ABE-CP1040', '190103_U2OS_12kChar_ABE', '190103_U2OS_12kChar_AID', '190103_U2OS_12kChar_BE4-CP1028', '190103_U2OS_12kChar_BE4', '190103_U2OS_12kChar_CDA', '190103_U2OS_12kChar_eA3A', '190103_U2OS_12kChar_evoAPOBEC', '190103_U2OS_AtoG_ABE-CP1040', '190103_U2OS_AtoG_ABE', '190103_U2OS_CtoT_AID', '190103_U2OS_CtoT_BE4-CP1028', '190103_U2OS_CtoT_BE4', '190103_U2OS_CtoT_CDA', '190103_U2OS_CtoT_eA3A', '190103_U2OS_CtoT_evoAPOBEC', '190103_mES_AtoG_ABE-CP1040', '190204_U2OS_CtoT_AID', '190204_U2OS_CtoT_BE4-CP1028', '190204_U2OS_CtoT_BE4', '190204_U2OS_CtoT_CDA', '190204_U2OS_CtoT_eA3A', '190204_U2OS_CtoT_evoAPOBEC', '190204_mES_AtoG_ABE-CP1040', '190307_U2OS_12kChar_ABE', '190307_U2OS_12kChar_BE4', '190329_U2OS_12kChar_AID', '190329_U2OS_12kChar_CDA']
-
   num_scripts = 0
   for idx, row in treat_control_df.iterrows():
     treat_nm, control_nm = row['Treatment'], row['Control']
@@ -525,10 +504,28 @@ def gen_qsubs():
     command = 'python %s.py %s %s' % (NAME, treat_nm, control_nm)
     script_id = NAME.split('_')[0]
 
-    if treat_nm not in custom_ram:
-      ram_gb = 2
-    else:
-      ram_gb = custom_ram[treat_nm]
+    '''
+      Empirically determined
+      pickle > 37 mb: needs 4 gb ram
+      pickle > 335 mb: needs 8 gb ram
+    '''
+    mb_file_size = _data.check_file_size(treat_nm, 'g5_combin_be')
+    ram_gb = 2
+    if mb_file_size > 30:
+      ram_gb = 4
+    elif mb_file_size > 300:
+      ram_gb = 8
+    elif mb_file_size > 1000:
+      ram_gb = 16
+
+    '''
+      Can be very slow - up to 8h+ for some conditions.
+
+      Could help to split 3 steps into 3 scripts.
+      Statistical tests should be performed globally (for accurate FDR thresholds), and luckily these are the fast parts of the pipeline
+
+      Subtracting control from treatment involves a lot of dataframe manipulations and is the bottleneck step. Fortunately, this can be parallelized
+    '''
 
     # Write shell scripts
     sh_fn = qsubs_dir + 'q_%s_%s_%s.sh' % (script_id, treat_nm, control_nm)
@@ -537,7 +534,7 @@ def gen_qsubs():
     num_scripts += 1
 
     # Write qsub commands
-    qsub_commands.append('qsub -V -l h_rt=16:00:00,h_vmem=%sG -wd %s %s &' % (ram_gb, _config.SRC_DIR, sh_fn))
+    qsub_commands.append('qsub -V -P regevlab -l h_rt=16:00:00,h_vmem=%sG -wd %s %s &' % (ram_gb, _config.SRC_DIR, sh_fn))
 
   # Save commands
   commands_fn = qsubs_dir + '_commands.sh'

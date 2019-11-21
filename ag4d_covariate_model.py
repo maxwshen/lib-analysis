@@ -416,7 +416,7 @@ def gen_qsubs():
     num_scripts += 1
 
     # Write qsub commands
-    qsub_commands.append('qsub -V -l h_rt=20:00:00,h_vmem=2G -wd %s %s &' % (_config.SRC_DIR, sh_fn))
+    qsub_commands.append('qsub -V -P regevlab -l h_rt=20:00:00,h_vmem=2G -wd %s %s &' % (_config.SRC_DIR, sh_fn))
 
   # Save commands
   commands_fn = qsubs_dir + '_commands.sh'

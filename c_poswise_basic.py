@@ -23,8 +23,8 @@ nt_to_idx = {nts[s]: s for s in range(len(nts))}
 # Form groups
 ##
 def form_data(exp_nm):
-  data = _data.load_data(exp_nm, 'ag4a2_adjust_batch_effects')
-  lib_design, seq_col = _data.get_lib_design(exp_nm)
+  data = _data.load_data(exp_nm, 'ag4b4_filter_inprofile_batch_effects')
+  lib_design, seq_col = _data.get_g4_lib_design(exp_nm)
 
   nms = lib_design['Name (unique)']
   seqs = lib_design[seq_col]
@@ -99,7 +99,7 @@ def gen_qsubs():
     num_scripts += 1
 
     # Write qsub commands
-    qsub_commands.append('qsub -V -l h_rt=4:00:00,h_vmem=1G -wd %s %s &' % (_config.SRC_DIR, sh_fn))
+    qsub_commands.append('qsub -V -P regevlab -l h_rt=4:00:00,h_vmem=1G -wd %s %s &' % (_config.SRC_DIR, sh_fn))
 
   # Save commands
   commands_fn = qsubs_dir + '_commands.sh'

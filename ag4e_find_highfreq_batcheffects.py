@@ -178,7 +178,7 @@ def identify_highfreq_batcheffects():
   timer = util.Timer(total = len(be_treatments))
   for treat_nm in be_treatments:
     adj_d = pickle.load(open(inp_dir + '%s.pkl' % (treat_nm), 'rb'))
-    lib_design, seq_col = _data.get_lib_design(treat_nm)
+    lib_design, seq_col = _data.get_g4_lib_design(treat_nm)
     nms = lib_design['Name (unique)']
     seqs = lib_design[seq_col]
     nm_to_seq = {nm: seq for nm, seq in zip(nms, seqs)}

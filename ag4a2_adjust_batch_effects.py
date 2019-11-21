@@ -41,10 +41,16 @@ def filter_mutations(to_remove, adj_d, nm_to_seq, treat_nm):
     
     for nm in adj_d:
       seq = nm_to_seq[nm]
-      if seq[pos_idx] == ref_nt:
-        t = adj_d[nm]
-        t[pos_idx][kdx] = 0
-        adj_d[nm] = t
+
+      try:
+        if seq[pos_idx] == ref_nt:
+          t = adj_d[nm]
+          t[pos_idx][kdx] = np.nan
+          adj_d[nm] = t
+      except IndexError:
+        # 8/14/19: Not sure why this would happen -- if indexerror, that pos_idx shouldn't be able to be considered for this treat_nm in the first place to identify a batch effect. Hacky fix :/ 
+        print(treat_nm, nm, pos_idx, len(seq))
+        pass
     # timer.update()
 
   return adj_d
@@ -93,6 +99,9 @@ def adjust_batch_effects():
     timer.update()
 
   mdf['Log mean activity'] = np.log10(mdf['Mean activity'])
+
+  cbe_editors = set([e for e in mdf['Editor'] if 'ABE' not in e])
+  abe_editors = set([e for e in mdf['Editor'] if 'ABE' in e])
 
   # ANOVA calculations
   from scipy.stats import f_oneway
@@ -154,10 +163,42 @@ def adjust_batch_effects():
     }
     mean_vals = list(means.values())
     mean_means = np.mean(mean_vals)
+    median_means = np.median(mean_vals)
+
+    crit = (mdf['Position'] == pos) & \
+           (mdf['Ref nt'] == ref_nt) & \
+           (mdf['Obs nt'] == obs_nt) & \
+           (mdf['Editor'].isin(cbe_editors))
+    cbe_means = {
+      batch_nm: np.mean(mdf[crit & (mdf['Batch'] == batch_nm)]['Mean activity']) \
+      for batch_nm in set(mdf[crit]['Batch'])
+    }
+    cbe_mean_means = np.mean(list(cbe_means.values()))
+    cbe_median_means = np.median(list(cbe_means.values()))
+
+    crit = (mdf['Position'] == pos) & \
+           (mdf['Ref nt'] == ref_nt) & \
+           (mdf['Obs nt'] == obs_nt) & \
+           (mdf['Editor'].isin(abe_editors))
+    abe_means = {
+      batch_nm: np.mean(mdf[crit & (mdf['Batch'] == batch_nm)]['Mean activity']) \
+      for batch_nm in set(mdf[crit]['Batch'])
+    }
+    abe_mean_means = np.mean(list(abe_means.values()))
+    abe_median_means = np.median(list(abe_means.values()))
+
+    # Ignore batch effects with small effect size
     if max(mean_vals) - min(mean_vals) < 0.002:
       continue
+
+    # Batch effect should be enriched over a rare background when controlling for editor type
+    bg_threshold = 0.0005
+    # if cbe_mean_means > bg_threshold or abe_mean_means > bg_threshold:
+    if cbe_median_means > bg_threshold or abe_median_means > bg_threshold:
+      continue
+
     for batch_nm in means:
-      if means[batch_nm] >= mean_means or means[batch_nm] >= 0.005:
+      if means[batch_nm] >= 0.002:
         dd['Position'].append(pos)
         dd['Ref nt'].append(ref_nt)
         dd['Obs nt'].append(obs_nt)
@@ -170,7 +211,7 @@ def adjust_batch_effects():
   timer = util.Timer(total = len(be_treatments))
   for treat_nm in be_treatments:
     adj_d = _data.load_data(treat_nm, 'ag4_poswise_be_adjust')
-    lib_design, seq_col = _data.get_lib_design(treat_nm)
+    lib_design, seq_col = _data.get_g4_lib_design(treat_nm)
     nms = lib_design['Name (unique)']
     seqs = lib_design[seq_col]
     nm_to_seq = {nm: seq for nm, seq in zip(nms, seqs)}

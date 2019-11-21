@@ -50,7 +50,9 @@ def train_models(exp_nm, data, mut, ml_task):
       'GBTR': GradientBoostingRegressor(),
     }
     data = data[data['Frequency'] > 0]
-    data['y'] = data['Frequency']
+    data = data[data['Frequency'] < 1]
+    from scipy.special import logit
+    data['y'] = logit(data['Frequency'])
     evals = {
       'spearmanr': lambda t, p: spearmanr(t, p)[0],
       'pearsonr': lambda t, p: pearsonr(t, p)[0],
@@ -197,6 +199,9 @@ def gather_statistics(exp_nm):
   #     group_cols = [s for s in d_temp.columns if s not in ['Frequency', 'Obs nt', 'Ref nt', 'Count']]
   #     d_temp = d_temp.groupby(group_cols)['Frequency'].agg('sum').reset_index()
 
+  print(data.columns)
+  print(set(data['Mutation']))
+
   acc_muts = [
     'C_T',
     'C_G',
@@ -211,12 +216,28 @@ def gather_statistics(exp_nm):
   ).reset_index()
   data = data.fillna(value = 0)
 
+
   numerator = data['C_G'] + data['C_A']
   denominator = data['C_T'] + data['C_G'] + data['C_A']
   data['Frequency'] = numerator / denominator
   data = data.dropna()
 
   mut_name = 'C_GA_over_C_D'
+  data['MutName'] = data['Name'].astype(str) + '_' + data['Position'].astype(str) + '_' + mut_name
+  print(data.shape)
+
+  for ml_task in ['regress_nonzero', 'classify_zero']:
+    print(ml_task)
+    results = train_models(exp_nm, data, mut_name, ml_task)
+    save_results(exp_nm, mut_name, ml_task, results)
+
+  ##
+  numerator = data['C_T']
+  denominator = data['C_T'] + data['C_G'] + data['C_A']
+  data['Frequency'] = numerator / denominator
+  data = data.dropna()
+
+  mut_name = 'C_T_over_C_D'
   data['MutName'] = data['Name'].astype(str) + '_' + data['Position'].astype(str) + '_' + mut_name
   print(data.shape)
 
@@ -255,6 +276,21 @@ def gather_statistics(exp_nm):
     results = train_models(exp_nm, data, mut_name, ml_task)
     save_results(exp_nm, mut_name, ml_task, results)
 
+  ##
+  numerator = data['C_G']
+  denominator = data['C_A'] + data['C_G']
+  data['Frequency'] = numerator / denominator
+  data = data.dropna()
+
+  mut_name = 'C_G_over_C_GA'
+  data['MutName'] = data['Name'].astype(str) + '_' + data['Position'].astype(str) + '_' + mut_name
+  print(data.shape)
+
+  for ml_task in ['regress_nonzero', 'classify_zero']:
+    print(ml_task)
+    results = train_models(exp_nm, data, mut_name, ml_task)
+    save_results(exp_nm, mut_name, ml_task, results)
+
   return
 
 
@@ -279,6 +315,11 @@ def gen_qsubs():
       continue
     if 'Cas9' in treat_nm:
       continue
+    if '12kChar' not in treat_nm:
+      continue
+
+    out_fn = out_dir + '%s_%s_%s_model_stats.csv' % (treat_nm, 'C_G_over_C_D', 'regress_nonzero')
+    if os.path.isfile(out_fn): continue
 
     command = 'python %s.py %s' % (NAME, treat_nm)
     script_id = NAME.split('_')[0]
@@ -290,7 +331,7 @@ def gen_qsubs():
     num_scripts += 1
 
     # Write qsub commands
-    qsub_commands.append('qsub -V -l h_rt=4:00:00,h_vmem=1G -wd %s %s &' % (_config.SRC_DIR, sh_fn))
+    qsub_commands.append('qsub -V -P regevlab -l h_rt=4:00:00,h_vmem=1G -wd %s %s &' % (_config.SRC_DIR, sh_fn))
 
   # Save commands
   commands_fn = qsubs_dir + '_commands.sh'

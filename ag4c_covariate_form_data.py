@@ -113,7 +113,7 @@ def load_Y():
     if 'Cas9' in treat_nm:
       continue
     adj_d = _data.load_data(treat_nm, 'ag4_poswise_be_adjust')
-    lib_design, seq_col = _data.get_lib_design(treat_nm)
+    lib_design, seq_col = _data.get_g4_lib_design(treat_nm)
     nms = lib_design['Name (unique)']
     seqs = lib_design[seq_col]
     nm_to_seq = {nm: seq for nm, seq in zip(nms, seqs)}

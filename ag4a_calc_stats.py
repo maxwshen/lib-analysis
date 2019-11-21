@@ -33,7 +33,7 @@ def calculate_statistics(treat_nm):
 
   adj_d = _data.load_data(treat_nm, 'ag4_poswise_be_adjust')
 
-  lib_design, seq_col = _data.get_lib_design(treat_nm)
+  lib_design, seq_col = _data.get_g4_lib_design(treat_nm)
   nms = lib_design['Name (unique)']
   seqs = lib_design[seq_col]
   nm_to_seq = {nm: seq for nm, seq in zip(nms, seqs)}
@@ -141,7 +141,7 @@ def gen_qsubs():
     num_scripts += 1
 
     # Write qsub commands
-    qsub_commands.append('qsub -V -l h_rt=2:00:00,h_vmem=2G -wd %s %s &' % (_config.SRC_DIR, sh_fn))
+    qsub_commands.append('qsub -V -P regevlab -l h_rt=2:00:00,h_vmem=2G -wd %s %s &' % (_config.SRC_DIR, sh_fn))
 
   # Save commands
   commands_fn = qsubs_dir + '_commands.sh'

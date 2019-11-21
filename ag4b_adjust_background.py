@@ -10,6 +10,7 @@ import pandas as pd
 from scipy.stats import binom
 
 # Default params
+# inp_dir = _config.OUT_PLACE + 'ag4b4_filter_inprofile_batch_effects/'
 inp_dir = _config.OUT_PLACE + 'ag4a2_adjust_batch_effects/'
 NAME = util.get_fn(__file__)
 out_dir = _config.OUT_PLACE + NAME + '/'
@@ -57,6 +58,8 @@ def filter_freqzero_background_mutations(to_remove, adj_d, nm_to_seq):
     
     for nm in adj_d:
       seq = nm_to_seq[nm]
+      if pos_idx >= len(seq):
+        continue
       if seq[pos_idx] == ref_nt:
         t = adj_d[nm]
         t[pos_idx][kdx] = 0
@@ -78,7 +81,7 @@ def adjust_treatment_control(treat_nm):
   # adj_d = _data.load_data(treat_nm, 'ag4_poswise_be_adjust')
   adj_d = pickle.load(open(inp_dir + '%s.pkl' % (treat_nm), 'rb'))
 
-  lib_design, seq_col = _data.get_lib_design(treat_nm)
+  lib_design, seq_col = _data.get_g4_lib_design(treat_nm)
   nms = lib_design['Name (unique)']
   seqs = lib_design[seq_col]
   nm_to_seq = {nm: seq for nm, seq in zip(nms, seqs)}
@@ -95,7 +98,7 @@ def adjust_treatment_control(treat_nm):
     pw = adj_d[nm]
     seq = nm_to_seq[nm]
     for jdx in range(len(pw)):
-      tot = sum(pw[jdx])
+      tot = np.nansum(pw[jdx])
       ref_nt = seq[jdx]
       ref_idx = nt_to_idx[ref_nt]
       for kdx in range(len(pw[jdx])):
@@ -116,7 +119,7 @@ def adjust_treatment_control(treat_nm):
         dd['Name'].append(nm)
 
   df = pd.DataFrame(dd)
-  df = df[df['Total count'] >= 50]
+  df = df[df['Total count'] >= 100]
 
   # Form stats_df and find p for binomial, which is typically ~0.99
   dd = defaultdict(list)
@@ -206,8 +209,8 @@ def gen_qsubs():
   for idx, row in treat_control_df.iterrows():
     treat_nm = row['Treatment']
 
-    # if os.path.exists(out_dir + '%s.pkl' % (treat_nm)):
-      # continue
+    if os.path.exists(out_dir + '%s.pkl' % (treat_nm)):
+      continue
     if 'Cas9' in treat_nm:
       continue
 
@@ -221,7 +224,7 @@ def gen_qsubs():
     num_scripts += 1
 
     # Write qsub commands
-    qsub_commands.append('qsub -V -l h_rt=2:00:00,h_vmem=2G -wd %s %s &' % (_config.SRC_DIR, sh_fn))
+    qsub_commands.append('qsub -V -P regevlab -l h_rt=2:00:00,h_vmem=2G -wd %s %s &' % (_config.SRC_DIR, sh_fn))
 
   # Save commands
   commands_fn = qsubs_dir + '_commands.sh'

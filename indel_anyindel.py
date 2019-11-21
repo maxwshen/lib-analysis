@@ -27,9 +27,9 @@ exp_design_df = pd.read_csv(_config.DATA_DIR + 'master_exp_design.csv', index_co
 ##
 # Primary logic
 ##
-def indel_poswise(exp_nm):
+def indel_anyindel(exp_nm):
   try:
-    ipw_data = _data.load_data(exp_nm, 'h4_poswise_del')
+    data = _data.load_data(exp_nm, 'ah6a3_remove_batch')
   except:
     print('Error : could not load data')
     sys.exit(1)
@@ -37,24 +37,45 @@ def indel_poswise(exp_nm):
   lib_design, seq_col = _data.get_lib_design(exp_nm)
 
   dd = defaultdict(list)
-  timer = util.Timer(total = len(ipw_data))
-  for target_nm in ipw_data:
-    pw = ipw_data[target_nm]
+  timer = util.Timer(total = len(data))
+  for target_nm in data:
+    df = data[target_nm]
 
-    for pos in range(len(pw)):
-      tot_count = sum(pw[pos])
-      del_count = pw[pos][-1]
+    tot_count = sum(df['Count'])
+    dd['Total count'].append(tot_count)
+    dd['Name'].append(target_nm)
 
-      true_pos = _data.idx_to_pos(pos, exp_nm)
-      dd['Position'].append(true_pos)
-      dd['Total count'].append(tot_count)
-      dd['Deletion count'].append(del_count)
-      dd['Name'].append(target_nm)
+    crit = (df['Category'] != 'wildtype')
+    indel_count = sum(df[crit]['Count'])
+    dd['Indel count'].append(indel_count)
+    if tot_count != 0:
+      dd['Indel freq'].append(indel_count / tot_count)
+    else:
+      dd['Indel freq'].append(np.nan)
 
-      if tot_count > 0:
-        dd['Deletion frequency'].append(del_count / tot_count)
-      else:
-        dd['Deletion frequency'].append(np.nan)
+    crit = (df['Category'] == 'del')
+    del_count = sum(df[crit]['Count'])
+    dd['Del count'].append(del_count)
+    if tot_count != 0:
+      dd['Del freq'].append(del_count / tot_count)
+    else:
+      dd['Del freq'].append(np.nan)
+
+    crit = (df['Category'] == 'ins')
+    ins_count = sum(df[crit]['Count'])
+    dd['Ins count'].append(ins_count)
+    if tot_count != 0:
+      dd['Ins freq'].append(ins_count / tot_count)
+    else:
+      dd['Ins freq'].append(np.nan)
+
+    crit = (df['Category'] == 'wildtype')
+    wt_count = sum(df[crit]['Count'])
+    dd['Wildtype count'].append(wt_count)
+    if tot_count != 0:
+      dd['Wildtype freq'].append(wt_count / tot_count)
+    else:
+      dd['Wildtype freq'].append(np.nan)
 
     timer.update()
 
@@ -76,8 +97,12 @@ def gen_qsubs():
   qsub_commands = []
 
   num_scripts = 0
-  for idx, row in exp_design_df.iterrows():
-    treat_nm = row['Name']
+  for idx, row in treat_control_df.iterrows():
+    treat_nm = row['Treatment']
+
+    out_fn = out_dir + f'{treat_nm}.csv'
+    if os.path.isfile(out_fn):
+      continue
 
     command = 'python %s.py %s' % (NAME, treat_nm)
     script_id = NAME.split('_')[0]
@@ -89,7 +114,7 @@ def gen_qsubs():
     num_scripts += 1
 
     # Write qsub commands
-    qsub_commands.append('qsub -V -l h_rt=4:00:00,h_vmem=1G -wd %s %s &' % (_config.SRC_DIR, sh_fn))
+    qsub_commands.append('qsub -V -P regevlab -l h_rt=4:00:00,h_vmem=1G -wd %s %s &' % (_config.SRC_DIR, sh_fn))
 
   # Save commands
   commands_fn = qsubs_dir + '_commands.sh'
@@ -108,7 +133,7 @@ def gen_qsubs():
 def main(exp_nm = ''):
   print(NAME)
   
-  indel_poswise(exp_nm)
+  indel_anyindel(exp_nm)
 
 
   return
